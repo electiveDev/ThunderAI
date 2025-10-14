@@ -58,6 +58,8 @@ import { taSpamReport } from './js/mzta-spamreport.js';
 import { taWorkingStatus } from './js/mzta-working-status.js';
 import { addTags_getExclusionList, checkExcludedTag } from './js/mzta-addatags-exclusion-list.js';
 
+const SPAMFILTER_CHECKED_TAG_LABEL = 'ThunderAI ✓ checked';
+
 browser.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
     // console.log(">>>>>>>>>>> onInstalled: " + JSON.stringify(reason) + ", previousVersion: " + previousVersion);
     if (reason === "install" 
@@ -213,6 +215,25 @@ async function _assign_tags(_data, create_new_tags = true, exclusions_exact_matc
     }
     let added_tags = await assignTagsToMessage(_data.messageId, new_tags);
     taLog.log("Assigned tags: " + JSON.stringify(added_tags));
+}
+
+async function ensureSpamfilterCheckedTag(messageId) {
+    try {
+        let [, tagsMap] = await getTagsList();
+        if (!checkIfTagLabelExists(SPAMFILTER_CHECKED_TAG_LABEL, tagsMap)) {
+            const canCreateTag = await browser.permissions.contains({ permissions: ["messagesTags"] });
+            if (!canCreateTag) {
+                taLog.log("messagesTags permission not granted, skipping creation of spamfilter checked tag.");
+                return;
+            }
+            taLog.log("Creating spamfilter checked tag: " + SPAMFILTER_CHECKED_TAG_LABEL);
+            await createTag(SPAMFILTER_CHECKED_TAG_LABEL, { skipFirstUppercase: true });
+        }
+        taLog.log("Assigning spamfilter checked tag to message: " + messageId);
+        await assignTagsToMessage(messageId, [SPAMFILTER_CHECKED_TAG_LABEL]);
+    } catch (error) {
+        console.error("[ThunderAI | SpamFilter] Error ensuring checked tag:", error);
+    }
 }
 
 messenger.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1150,6 +1171,8 @@ async function processEmails(messages, addTagsAuto, spamFilter) {
             report_data.message_date = new Date(message.date);
             report_data.moved = false;
             report_data.SpamThreshold = prefs_init.spamfilter_threshold;
+
+            await ensureSpamfilterCheckedTag(message.id);
 
             if (jsonObj.spamValue >= prefs_init.spamfilter_threshold) {
                 taLog.log("Marking as spam [" + message.headerMessageId + "]");

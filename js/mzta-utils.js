@@ -393,9 +393,9 @@ export async function getTagsList(){
   return [output, output2]; // Return the list of tags and the list of tags objects as an array
 }
 
-export async function createTag(tag) {
+export async function createTag(tag, { skipFirstUppercase = false } = {}) {
   let prefs_tag = await browser.storage.sync.get({ add_tags_first_uppercase: prefs_default.add_tags_first_uppercase });
-  if(prefs_tag.add_tags_first_uppercase) tag = tag.toLowerCase().charAt(0).toUpperCase() + tag.toLowerCase().slice(1);
+  if(prefs_tag.add_tags_first_uppercase && !skipFirstUppercase) tag = tag.toLowerCase().charAt(0).toUpperCase() + tag.toLowerCase().slice(1);
   try {
     if(await isThunderbird128OrGreater()) {
       return browser.messages.tags.create('$ta-'+sanitizeString(tag), tag, generateHexColorForTag());
