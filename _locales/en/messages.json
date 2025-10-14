@@ -1275,21 +1275,6 @@
     "message": "No",
     "description": ""
   },
-  "SpamFilter_manual_result": {
-    "message": "Spam filter: $STATUS$ ($SCORE$/$THRESHOLD$)",
-    "description": "",
-    "placeholders": {
-      "status": {
-        "content": "$1"
-      },
-      "score": {
-        "content": "$2"
-      },
-      "threshold": {
-        "content": "$3"
-      }
-    }
-  },
   "context_menu_mzta-add-tags": {
     "message": "Add tags",
     "description": ""
