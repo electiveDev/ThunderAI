@@ -451,6 +451,36 @@ export async function assignTagsToMessage(messageId, tags) {
   }
 }
 
+export async function removeTagsFromMessage(messageId, tagLabels) {
+  if (!tagLabels || tagLabels.length === 0) {
+    return;
+  }
+
+  let [, allTagsMap] = await getTagsList();
+  const labelsToRemove = tagLabels.map((label) => label.toLowerCase());
+  const keysToRemove = Object.entries(allTagsMap)
+    .filter(([, value]) => labelsToRemove.includes(value.tag.toLowerCase()))
+    .map(([key]) => key);
+
+  if (keysToRemove.length === 0) {
+    return;
+  }
+
+  const message = await browser.messages.get(messageId);
+  const currentTags = message.tags || [];
+  const updatedTags = currentTags.filter((tagKey) => !keysToRemove.includes(tagKey));
+
+  if (updatedTags.length === currentTags.length) {
+    return;
+  }
+
+  try {
+    await browser.messages.update(messageId, { tags: updatedTags });
+  } catch (error) {
+    console.error('[ThunderAI] Error removing tags [messageId: ', messageId, ' - tags: ', tagLabels, ']:', error);
+  }
+}
+
 function getTagsKeyFromLabel(tag_names, all_tags_list) {
   const result = [];
 
