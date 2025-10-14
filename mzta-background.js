@@ -975,7 +975,7 @@ function addContextMenuItems() {
 addContextMenuItems();
 
 // Listen for context menu item clicks
-browser.menus.onClicked.addListener( (info, tab) => {
+browser.menus.onClicked.addListener((info, tab) => {
     let _add_tags = false
     let _spamfilter = false
     if(info.menuItemId === contextMenuID_AddTags){
@@ -985,7 +985,15 @@ browser.menus.onClicked.addListener( (info, tab) => {
         _spamfilter = true;
     }
     if(_add_tags || _spamfilter){
-        processEmails(getMessages(info.selectedMessages), _add_tags, _spamfilter);
+        processEmails(
+            getMessages(info.selectedMessages),
+            _add_tags,
+            _spamfilter,
+            {
+                manualSpamfilter: _spamfilter,
+                tabId: info.tabId ?? tab?.id
+            }
+        );
     }
 });
 
@@ -1017,9 +1025,9 @@ const newEmailListener = (folder, messagesList) => {
     return _newEmailListener();
 }
 
-async function processEmails(messages, addTagsAuto, spamFilter) {
+async function processEmails(messages, addTagsAuto, spamFilter, context = {}) {
     taWorkingStatus.startWorking();
-    
+
     let prefs_aats = await browser.storage.sync.get({
         add_tags_maxnum: prefs_default.add_tags_maxnum,
         connection_type: prefs_default.connection_type,
@@ -1035,6 +1043,9 @@ async function processEmails(messages, addTagsAuto, spamFilter) {
         spamfilter_use_specific_integration: prefs_default.spamfilter_use_specific_integration,
         do_debug: prefs_default.do_debug,
     });
+
+    const manualSpamfilter = Boolean(context.manualSpamfilter);
+    const manualTabId = context.tabId;
 
     for await (let message of messages) {
         let curr_fullMessage = null;
@@ -1161,6 +1172,38 @@ async function processEmails(messages, addTagsAuto, spamFilter) {
             }
 
             taSpamReport.saveReportData(report_data, message.headerMessageId);
+
+            if (manualSpamfilter && manualTabId) {
+                const statusText = browser.i18n.getMessage(report_data.moved ? 'spamfilter_moved' : 'spamfilter_not_moved');
+                const baseMessage = browser.i18n.getMessage('SpamFilter_manual_result', [
+                    statusText,
+                    String(report_data.spamValue ?? ''),
+                    String(report_data.SpamThreshold ?? '')
+                ]);
+
+                const subjectRaw = Array.isArray(report_data.subject) ? report_data.subject.join(', ') : report_data.subject || '';
+                const subjectText = subjectRaw.trim();
+                const truncatedSubject = subjectText.length > 120 ? `${subjectText.slice(0, 117)}…` : subjectText;
+                const explanationTextRaw = (report_data.explanation || '').toString().trim();
+                const truncatedExplanation = explanationTextRaw.length > 220 ? `${explanationTextRaw.slice(0, 217)}…` : explanationTextRaw;
+
+                let toastMessage = baseMessage;
+                if (truncatedSubject) {
+                    toastMessage = `“${truncatedSubject}” – ${toastMessage}`;
+                }
+                if (truncatedExplanation) {
+                    toastMessage = `${toastMessage} – ${truncatedExplanation}`;
+                }
+
+                browser.tabs.sendMessage(manualTabId, {
+                    command: 'showTemporaryMessage',
+                    text: toastMessage,
+                    variant: report_data.moved ? 'warning' : 'info',
+                    duration: 6000
+                }).catch((error) => {
+                    taLog.log('Unable to show manual spam filter toast: ' + error);
+                });
+            }
         }
     }
     taWorkingStatus.stopWorking();
