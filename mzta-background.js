@@ -33,6 +33,7 @@ import {
     getTagsList,
     createTag,
     assignTagsToMessage,
+    removeTagsFromMessage,
     checkIfTagLabelExists,
     getActiveSpecialPromptsIDs,
     checkSparksPresence,
@@ -58,7 +59,8 @@ import { taSpamReport } from './js/mzta-spamreport.js';
 import { taWorkingStatus } from './js/mzta-working-status.js';
 import { addTags_getExclusionList, checkExcludedTag } from './js/mzta-addatags-exclusion-list.js';
 
-const SPAMFILTER_CHECKED_TAG_LABEL = 'ThunderAI ✓ checked';
+const SPAMFILTER_NON_SPAM_TAG_LABEL = 'Geprüft - Kein Spam';
+const SPAMFILTER_SPAM_TAG_LABEL = 'Spam';
 
 browser.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
     // console.log(">>>>>>>>>>> onInstalled: " + JSON.stringify(reason) + ", previousVersion: " + previousVersion);
@@ -217,22 +219,28 @@ async function _assign_tags(_data, create_new_tags = true, exclusions_exact_matc
     taLog.log("Assigned tags: " + JSON.stringify(added_tags));
 }
 
-async function ensureSpamfilterCheckedTag(messageId) {
+async function ensureSpamfilterTag(messageId, tagLabel) {
     try {
         let [, tagsMap] = await getTagsList();
-        if (!checkIfTagLabelExists(SPAMFILTER_CHECKED_TAG_LABEL, tagsMap)) {
+        if (!checkIfTagLabelExists(tagLabel, tagsMap)) {
             const canCreateTag = await browser.permissions.contains({ permissions: ["messagesTags"] });
             if (!canCreateTag) {
-                taLog.log("messagesTags permission not granted, skipping creation of spamfilter checked tag.");
+                taLog.log("messagesTags permission not granted, skipping creation of spamfilter tag: " + tagLabel);
                 return;
             }
-            taLog.log("Creating spamfilter checked tag: " + SPAMFILTER_CHECKED_TAG_LABEL);
-            await createTag(SPAMFILTER_CHECKED_TAG_LABEL, { skipFirstUppercase: true });
+            taLog.log("Creating spamfilter tag: " + tagLabel);
+            await createTag(tagLabel, { skipFirstUppercase: true });
         }
-        taLog.log("Assigning spamfilter checked tag to message: " + messageId);
-        await assignTagsToMessage(messageId, [SPAMFILTER_CHECKED_TAG_LABEL]);
+
+        const tagToRemove = tagLabel === SPAMFILTER_SPAM_TAG_LABEL
+            ? SPAMFILTER_NON_SPAM_TAG_LABEL
+            : SPAMFILTER_SPAM_TAG_LABEL;
+        await removeTagsFromMessage(messageId, [tagToRemove]);
+
+        taLog.log(`Assigning spamfilter tag (${tagLabel}) to message: ${messageId}`);
+        await assignTagsToMessage(messageId, [tagLabel]);
     } catch (error) {
-        console.error("[ThunderAI | SpamFilter] Error ensuring checked tag:", error);
+        console.error(`[ThunderAI | SpamFilter] Error ensuring tag (${tagLabel}):`, error);
     }
 }
 
@@ -1172,9 +1180,11 @@ async function processEmails(messages, addTagsAuto, spamFilter) {
             report_data.moved = false;
             report_data.SpamThreshold = prefs_init.spamfilter_threshold;
 
-            await ensureSpamfilterCheckedTag(message.id);
+            const isSpam = jsonObj.spamValue >= prefs_init.spamfilter_threshold;
+            const spamfilterTagLabel = isSpam ? SPAMFILTER_SPAM_TAG_LABEL : SPAMFILTER_NON_SPAM_TAG_LABEL;
+            await ensureSpamfilterTag(message.id, spamfilterTagLabel);
 
-            if (jsonObj.spamValue >= prefs_init.spamfilter_threshold) {
+            if (isSpam) {
                 taLog.log("Marking as spam [" + message.headerMessageId + "]");
                 messenger.messages.update(message.id, { junk: true });
                 let spamFolder = await messenger.folders.query({ accountId: message.folder.accountId, specialUse: ['junk'] });
