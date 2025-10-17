@@ -30,6 +30,37 @@ let current_mailMessageId = null;
 let selectionChangeTimeout = null;
 let isDragging = false;
 let delay_wait_completion = 7000; // milliseconds
+let forcecompletionHintTimeoutId = null;
+let generationStarted = false;
+
+function clearForceCompletionHintTimeout() {
+    if (forcecompletionHintTimeoutId) {
+        clearTimeout(forcecompletionHintTimeoutId);
+        forcecompletionHintTimeoutId = null;
+    }
+    const hintElement = document.getElementById('mzta-forcecomp-hint');
+    if (hintElement) {
+        hintElement.style.display = 'none';
+    }
+}
+
+function scheduleForceCompletionHint() {
+    clearForceCompletionHintTimeout();
+    const hintElement = document.getElementById('mzta-forcecomp-hint');
+    if (!hintElement) {
+        return;
+    }
+    forcecompletionHintTimeoutId = setTimeout(() => {
+        hintElement.style.display = 'block';
+    }, delay_wait_completion);
+}
+
+function resetForceCompletionState() {
+    do_force_completion = false;
+    force_go = false;
+    generationStarted = false;
+    clearForceCompletionHintTimeout();
+}
 
 async function chatgpt_sendMsg(msg, method ='') {       // return -1 send button not found, -2 textarea not found
     let textArea = document.getElementById('prompt-textarea')
@@ -75,13 +106,74 @@ async function chatgpt_sendMsg(msg, method ='') {       // return -1 send button
     return 0;   //everything is ok
 }
 
+function chatgpt_isGenerating() {
+    const stopSelectors = [
+        'button[data-testid="stop-button"]',
+        'button[data-testid="stop"]',
+        'button[data-testid="stop-generating"]',
+        'button[aria-label*="Stop generating"]',
+        'button[aria-label*="stop generating"]'
+    ];
+    for (const selector of stopSelectors) {
+        if (document.querySelector(selector)) {
+            return true;
+        }
+    }
+    const stopButton = Array.from(document.querySelectorAll('button')).find(button =>
+        /stop generating/i.test(button?.textContent || '')
+    );
+    if (stopButton) {
+        return true;
+    }
+    const busySelectors = [
+        'main [data-testid="result-streaming"]',
+        'main [data-testid="result-loader"]',
+        'main [data-testid="spinner"]',
+        'main svg[aria-label="Stop generating"]'
+    ];
+    return busySelectors.some(selector => document.querySelector(selector));
+}
+
 async function chatgpt_isIdle() {
     return new Promise(resolve => {
-        const intervalId = setInterval(() => {
-              if (chatgpt_getRegenerateButton() || do_force_completion) {
-                 clearInterval(intervalId); resolve(true);
-              }
-            }, 100);});}
+        let intervalId = null;
+        const fallbackTimeout = setTimeout(() => {
+            generationStarted = true;
+            if (intervalId) {
+                clearInterval(intervalId);
+            }
+            resolve(true);
+        }, delay_wait_completion * 3);
+
+        intervalId = setInterval(() => {
+            if (do_force_completion) {
+                clearTimeout(fallbackTimeout);
+                clearInterval(intervalId);
+                resolve(true);
+                return;
+            }
+
+            if (chatgpt_getRegenerateButton()) {
+                generationStarted = true;
+                clearTimeout(fallbackTimeout);
+                clearInterval(intervalId);
+                resolve(true);
+                return;
+            }
+
+            if (chatgpt_isGenerating()) {
+                generationStarted = true;
+                return;
+            }
+
+            if (generationStarted) {
+                clearTimeout(fallbackTimeout);
+                clearInterval(intervalId);
+                resolve(true);
+            }
+        }, 100);
+    });
+}
 
 function chatgpt_getRegenerateButton() {
     for (const mainSVG of document.querySelectorAll('main svg.icon')) {
@@ -371,8 +463,13 @@ function addCustomDiv(prompt_action,tabId,mailMessageId) {
     customBtn.id = 'mzta-custom_btn';
     customBtn.textContent = browser.i18n.getMessage("chatgpt_win_send");
     customBtn.classList.add('mzta-btn');
-    customBtn.addEventListener("click", () => { customTextBtnClick({customBtn:customBtn,customLoading:customLoading,customDiv:customDiv}) });
-    customTextArea.addEventListener("keydown", (event) => { if(event.code == "Enter" && event.ctrlKey) customTextBtnClick({customBtn:customBtn,customLoading:customLoading,customDiv:customDiv}) });
+    customBtn.addEventListener("click", () => { customTextBtnClick({customBtn:customBtn,customLoading:customLoading,customDiv:customDiv,customTextArea:customTextArea}) });
+    customTextArea.addEventListener("keydown", (event) => {
+        if(event.code == "Enter" && event.ctrlKey) {
+            event.preventDefault();
+            customTextBtnClick({customBtn:customBtn,customLoading:customLoading,customDiv:customDiv,customTextArea:customTextArea});
+        }
+    });
     customDiv.appendChild(customBtn);
     fixedDiv.appendChild(customDiv);
 
@@ -450,14 +547,27 @@ function createReplyToAllIcon() {
   return svg;
 }
 
-function customTextBtnClick(args) {
-    const customText = document.getElementById('mzta-custom_textarea').value;
+async function customTextBtnClick(args) {
+    const customTextArea = args.customTextArea || document.getElementById('mzta-custom_textarea');
+    const customText = customTextArea.value;
     args.customBtn.disabled = true;
-    args.customBtn.classList.add('disabled');
+    args.customBtn.classList.add('btn_disabled');
     args.customLoading.style.display = 'inline-block';
+    const send_result = await doProceed(current_message, customText);
+    if(send_result !== 0){
+        args.customBtn.disabled = false;
+        args.customBtn.classList.remove('btn_disabled');
+        args.customBtn.classList.remove('disabled');
+        args.customLoading.style.display = 'none';
+        args.customDiv.style.display = 'block';
+        customTextArea.focus();
+        return;
+    }
     args.customLoading.style.display = 'none';
-    doProceed(current_message,customText);
     args.customDiv.style.display = 'none';
+    args.customBtn.disabled = false;
+    args.customBtn.classList.remove('btn_disabled');
+    args.customBtn.classList.remove('disabled');
 }
 
 function checkGPTModel(model) {
@@ -506,11 +616,13 @@ function checkGPTModel(model) {
   });
 }
 
-function operation_done(){
+function operation_done({skipCompletedMsg = false} = {}){
     let curr_msg = document.getElementById('mzta-curr_msg');
-    curr_msg.textContent = browser.i18n.getMessage("chatgpt_win_job_completed");
-    if(current_action != '0'){
-        curr_msg.textContent += " " + browser.i18n.getMessage("chatgpt_win_job_completed_select"); 
+    if(!skipCompletedMsg){
+        curr_msg.textContent = browser.i18n.getMessage("chatgpt_win_job_completed");
+        if(current_action != '0'){
+            curr_msg.textContent += " " + browser.i18n.getMessage("chatgpt_win_job_completed_select");
+        }
     }
     curr_msg.style.display = 'block';
     document.getElementById('mzta-btn_ok').style.display = 'inline';
@@ -523,6 +635,7 @@ function operation_done(){
     document.getElementById('mzta-loading').style.display = 'none';
     document.getElementById('mzta-force-completion').style.display = 'none';
     document.getElementById('mzta-forcecomp-hint').style.display = 'none';
+    resetForceCompletionState();
     chatpgt_scrollToBottom();
 }
 
@@ -538,8 +651,20 @@ function showCustomTextField(){
 async function doProceed(message, customText = ''){
     let _gpt_model = mztaGPTModel;
     doLog("doProceed _gpt_model: " + JSON.stringify(_gpt_model));
+    generationStarted = false;
+    clearForceCompletionHintTimeout();
+    const forceCompletionDiv = document.getElementById('mzta-force-completion');
+    if(forceCompletionDiv){
+        forceCompletionDiv.style.display = 'inline';
+    }
     if(_gpt_model != ''){
-        await checkGPTModel(_gpt_model);
+        try{
+            await checkGPTModel(_gpt_model);
+        }finally{
+            force_go = false;
+        }
+    }else{
+        force_go = false;
     }
     let final_prompt = message.prompt;
 // console.log(">>>>>>>>>>>> doProceed customText: " + customText);
@@ -582,17 +707,15 @@ async function doProceed(message, customText = ''){
             curr_model_warn.insertAdjacentElement('afterend', btn_retry);
             break;
     }
-    let forcecompletionHintTimeout;
     if(send_result == 0){
-            forcecompletionHintTimeout = setTimeout(() => {
-            document.getElementById('mzta-forcecomp-hint').style.display = 'block';
-        }, delay_wait_completion);
+        scheduleForceCompletionHint();
+        await chatgpt_isIdle();
+        clearForceCompletionHintTimeout();
+        operation_done();
+    }else{
+        operation_done({skipCompletedMsg: true});
     }
-    await chatgpt_isIdle();
-    if(send_result == 0){
-        clearTimeout(forcecompletionHintTimeout);
-    }
-    operation_done();
+    return send_result;
 }
 
 function doRetry(){
@@ -604,11 +727,9 @@ function doRetry(){
 }
 
 async function showForceCompletionHint(){
-    const forcecompletionHintTimeout = setTimeout(() => {
-        document.getElementById('mzta-forcecomp-hint').style.display = 'block';
-    }, delay_wait_completion);
+    scheduleForceCompletionHint();
     await chatgpt_isIdle();
-    clearTimeout(forcecompletionHintTimeout);
+    clearForceCompletionHintTimeout();
 }
 
 function removeTagsAndReturnHTML(rootElement, removeTags, preserveTags) {
@@ -814,6 +935,7 @@ function run(checkTab = null) {
         // doLog("User not logged in, closing window.");
         // browser.runtime.sendMessage({command: "chatgpt_close", window_id: mztaWinId});
     }else{
+        resetForceCompletionState();
         addCustomDiv(current_action,current_tabId,current_mailMessageId);
         (async () => {
             if(mztaDoCustomText === "1"){
